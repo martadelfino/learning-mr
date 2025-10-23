@@ -49,9 +49,11 @@ SNP          CHR       POS ALLELE1 ALLELE0 `Discovery MA` `European-only MA`  ..
 
 Cleaning
 
--   The Outcome file is ready.
+-   The Exposure file needs cleaning. Selecting columns and creating new SNP IDs with chr number and position. Selecting only rows with positive betas - just make a new column for this. Flipping the ones with negative betas - make a new column for these as well. Creating new allele frequencies as well (1 - allele frequency) for the flipped alleles.
 
--   The Exposure file needs cleaning. Selecting columns and creating new SNP IDs with chr number and position. Selecting only rows with positive betas - just make a new column for this. Flipping the ones with negative betas - make a new column for these as well.
+-   The Outcome file needs checking for harmonization.
+
+Exposure file cleaning
 
 ```{r}
 #install.packages("readxl")
@@ -61,7 +63,7 @@ Cleaning
 library(readxl)
 library(tidyverse)
 
- exposure_raw <- readxl::read_excel("41588_2024_1798_MOESM4_ESM.xlsx", sheet = "ST2 | 1080 signals")
+ exposure_raw <- readxl::read_excel("data/41588_2024_1798_MOESM4_ESM.xlsx", sheet = "ST2 | 1080 signals")
 
 # Remove other ancestries and fix column names
 exposure <- exposure_raw %>%
@@ -75,18 +77,29 @@ exposure <- exposure_raw %>%
     Beta = as.numeric(Beta),       
     Beta_positive = if_else(Beta > 0, Beta, NA_real_)
   ) %>%
-  dplyr::mutate(Beta_negative = if_else(Beta < 0, Beta, NA_real_)) 
+  dplyr::mutate(Beta_negative = if_else(Beta < 0, Beta, NA_real_)) %>%
+  dplyr::mutate(`ALLELE1 freq.` = as.numeric(`ALLELE1 freq.`))
 
-write_tsv(exposure, "exposure_menarche_timing.tsv")
+neg_idx <- exposure$Beta < 0
+exposure$Beta[neg_idx] <- -exposure$Beta[neg_idx]
+
+# Step 3: Swap columns b and c for those rows
+temp <- exposure$ALLELE1[neg_idx]
+exposure$ALLELE1[neg_idx] <- exposure$ALLELE0[neg_idx]
+exposure$ALLELE0[neg_idx] <- temp
+exposure$`ALLELE1 freq.`[neg_idx] <- 1 - exposure$`ALLELE1 freq.`[neg_idx] 
+
+
+write_tsv(exposure, "data/exposure_menarche_timing.tsv")
 ```
 
 Reading the files
 
 ```{r}
-exposure <- read.delim("exposure_menarche_timing.tsv", 
+exposure <- read.delim("data/exposure_menarche_timing.tsv", 
                       sep = "\t",
                       stringsAsFactors = FALSE)
-outcome <- read.delim("Mahajan.NatGenet2018b.T2D.European.txt", 
+outcome <- read.delim("data/Mahajan.NatGenet2018b.T2D.European.txt", 
                       sep = "\t",
                       stringsAsFactors = FALSE)
 ```
@@ -107,29 +120,51 @@ outcome_mr <- outcome %>%
 
 # Exposure
 exposure_mr <- exposure %>%
-  dplyr::select(SNP, ALLELE1, ALLELE0, Beta_positive, SE) %>%
-  dplyr::filter(!is.na(Beta_positive)) %>%
+  dplyr::select(SNP, ALLELE1, ALLELE0, Beta, SE) %>%
   dplyr::rename(
-    beta_exposure = Beta_positive,
+    beta_exposure = Beta,
     se_exposure = SE,
     ea_exposure = ALLELE1,
     nea_exposure = ALLELE0
   )
 ```
 
-Merging - only doing MR on SNPs that exist in both
+Merging - and harmonizing outcome alleles to exposure alleles
 
 ```{r}
-merged_check <- inner_join(exposure_mr, outcome_mr, by = "SNP") %>%
-  dplyr::mutate(
-    # Identify matching or reversed alleles
-    allele_match = case_when(
-      ea_exposure == ea_outcome & nea_exposure == nea_outcome ~ "match",
-      ea_exposure == nea_outcome & nea_exposure == ea_outcome ~ "reverse",
-      TRUE ~ "mismatch"
-    ))
+merged1 <- inner_join(exposure_mr, outcome_mr, by = "SNP") #%>%
+```
 
-merged <- merged_check %>% dplyr::filter(allele_match != "mismatch")
+```{r}
+check_harmonisation <- function(df) {
+  df <- df %>%
+    rowwise() %>%
+    dplyr::mutate(
+      alignment_status = case_when(
+        # Alleles match directly
+        ea_exposure == ea_outcome &
+          nea_exposure == nea_outcome ~ "aligned",
+        # Alleles are swapped
+        ea_exposure == nea_outcome &
+          nea_exposure == ea_outcome ~ "reverse",
+        TRUE ~ "mismatch"
+      )
+    ) %>%
+    ungroup()
+
+  # Flip outcome effects where alleles are reversed 
+  df <- df %>%
+    dplyr::mutate(
+      beta_outcome_harmonised = ifelse(alignment_status == "reverse", 
+                                       -beta_outcome, 
+                                       beta_outcome)
+    )
+
+  return(df)
+}
+
+harmonised_check <- check_harmonisation(merged1)
+harmonised <- harmonised_check %>% dplyr::filter(alignment_status != "mismatch")
 
 ```
 
@@ -138,7 +173,7 @@ merged <- merged_check %>% dplyr::filter(allele_match != "mismatch")
 Inverse variance weights (the inverse of the squared SE of the outcome)
 
 ```{r}
-merged <- merged %>%
+merged <- harmonised %>%
   dplyr::mutate(weight = 1 / (se_outcome^2))
 ```
 
@@ -146,35 +181,48 @@ IVW point estimate
 
 ```{r}
 # IVW point estimate
-theta_IVW <- sum(merged$beta_outcome * merged$beta_exposure * merged$weight) /
+theta_IVW <- sum(merged$beta_outcome_harmonised * merged$beta_exposure * merged$weight) /
              sum(merged$beta_exposure^2 * merged$weight)
+
+exp_theta <- exp(theta_IVW)
+print(exp_theta)
 
 # IVW standard error
 se_IVW <- 1 / sqrt(sum(merged$beta_exposure^2 * merged$weight))
 
+# 95% Confidence Interval
+CI_lower <- exp(theta_IVW - 1.96 * se_IVW)
+CI_upper <- exp(theta_IVW + 1.96 * se_IVW)
+
+# Print results
+cat("IVW causal estimate (theta):", round(theta_IVW, 4), "\n")
+cat("Standard error:", round(se_IVW, 4), "\n")
+cat("95% CI:", round(CI_lower, 4), "to", round(CI_upper, 4), "\n")
 ```
 
 Scatter plot
 
 ```{r}
 # Scatter plot of SNP effects
-ggplot(merged, aes(x = beta_exposure, y = beta_outcome)) +
+ggplot(merged, aes(x = beta_exposure, y = beta_outcome_harmonised)) +
   geom_point(size = 2, color = "blue") +                       # SNP points
   geom_smooth(method = "lm", formula = y ~ x - 1,              # line through origin
               se = FALSE, color = "red", linetype = "dashed") +
   labs(
     title = "IVW MR: SNP-exposure vs SNP-outcome effects",
-    x = "SNP -> Exposure effect (beta)",
-    y = "SNP -> Outcome effect (beta)"
+    x = "SNP - Exposure effect (beta)",
+    y = "SNP - Outcome effect (beta)"
   ) +
   theme_minimal()
 ```
 
-The second formula in the document (using linear regression):
+Measure of effect
+
+**The second formula in the document (using linear regression):**
 
 ```{r}
 # Weighted linear regression IVW MR
-ivw_model <- lm(beta_outcome ~ beta_exposure - 1,
+ivw_model <- lm(beta_outcome_harmonised ~ beta_exposure - 1,
                 data = merged,
                 weights = 1 / se_outcome^2)
 
@@ -195,14 +243,14 @@ cat("SE random:", se_random)
 ```
 
 ```{r}
-ggplot(merged, aes(x = beta_exposure, y = beta_outcome)) +
+ggplot(merged, aes(x = beta_exposure, y = beta_outcome_harmonised)) +
   geom_point(size = 2, color = "blue") +                              # SNP points
   geom_abline(slope = thetaIVW, intercept = 0, color = "red", linetype = "dashed", size = 1) +  # IVW line
   labs(
     title = "IVW MR: SNP-exposure vs SNP-outcome effects",
     subtitle = paste0("IVW estimate = ", round(thetaIVW, 3)),
-    x = "SNP -> Exposure effect (beta)",
-    y = "SNP -> Outcome effect (beta)"
+    x = "SNP - Exposure effect (beta)",
+    y = "SNP - Outcome effect (beta)"
   ) +
   theme_minimal()
 ```
