@@ -1,0 +1,154 @@
+# Practice Multivariate IVW MR and MR Eggar - 27OCT25
+
+Experiment:
+
+-   Exposure: Menarche timing - from a supplementary file.
+
+-   Exposure: BMI - I need to find this myself.
+
+-   Outcome: T2D GWAS - from Felix.
+
+#### Multivariate IVW MR.
+
+Notes:
+
+-   abd
+
+Equations for Multivariate IVW MR.
+
+``` r
+theta1MI = summary(lm(bY~bX1+bX2+bX3-1, weights=bYse^-2))$coef[1]
+
+se_theta1MI.fixed = summary(lm(bY~bX1+bX2+bX3-1, weights=bYse^-2))$coef[1,2]/
+  summary(lm(bY~bX1+bX2+bX3-1, weights=bYse^-2))$sigma
+
+se_theta1MI.random = summary(lm(bY~bX1+bX2+bX3-1, weights=bYse^-2))$coef[1,2]/
+  min(summary(lm(bY~bX1+bX2+bX3-1, weights=bYse^-2))$sigma,1)
+```
+
+#### Multivariate MR Eggar.
+
+Notes:
+
+-   abd
+
+Equations for Multivariate MR Eggar.
+
+``` r
+#Orientation of the genetic associations with respect to X1
+clist<-c("bX2","bX3","bY")
+for (var in clist){
+  eval(parse(text=paste0(var,"<-ifelse(bX1>0,",var,",",var,"*-1)")))
+}
+bX1<-abs(bX1)
+
+#Causal estimate for X1
+theta1ME = summary(lm(bY~bX1+bX2+bX3, weights=bYse^-2))$coef[2]
+se_theta1ME.random = summary(lm(bY~bX1+bX2+bX3, weights=bYse^-2))$coef[2,2]/
+  min(summary(lm(bY~bX1+bX2+bX3, weights=bYse^-2))$sigma,1)
+lb_theta1ME = theta1ME - qt(0.975,df=length(bX1)-4)*se_theta1ME.random
+ub_theta1ME = theta1ME + qt(0.975,df=length(bX1)-4)*se_theta1ME.random
+p_theta1ME = 2*(1-pt(abs(theta1ME/se_theta1ME.random),df=length(bX1)-4))
+
+#Test for directional pleiotropy
+interME = summary(lm(bY~bX1+bX2+bX3, weights=bYse^-2))$coef[1]
+se_interME.random = summary(lm(bY~bX1+bX2+bX3, weights=bYse^-2))$coef[1,2]/
+  min(summary(lm(bY~bX1+bX2+bX3, weights=bYse^-2))$sigma,1)
+p_interME = 2*(1-pt(abs(interME/se_interME.random),df=length(bX1)-4))
+```
+
+To update:
+
+Definitions of the variables
+
+-   bY: The associations of the genetic variants with the outcome.
+
+-   bYse: Standard error of the associations of the genetic variants with the outcome.
+
+-   bX1: The associations of the genetic variants with the risk factors are denoted bXk with standard error bXk se, where k = 1, ..., K.
+
+**Reading merged and harmonized file**
+
+```{r}
+library(tidyverse, quietly = TRUE)
+
+merged <- read.delim("data/menarche_t2d_merged.tsv", sep = "\t",
+                      stringsAsFactors = FALSE)
+```
+
+Univariate MR
+
+```{r}
+#Assigning variables
+bY <- merged$beta_outcome_harmonised
+bX1 <- merged$beta_exposure
+bYse <- merged$se_outcome
+
+#Orientation of the genetic associations
+bY<-ifelse(bX1>0, bY, bY-1)
+bX1<-abs(bX1)
+
+
+```
+
+```{r}
+#Causal estimate
+thetaUE = summary(lm(bY~bX1, weights=bYse^-2))$coef[2]
+se_thetaUE.random = summary(lm(bY~bX1, weights=bYse^-2))$coef[2,2]/ min(summary(lm(bY~bX1, weights=bYse^-2))$sigma,1)
+lb_thetaUE = thetaUE - qt(0.975,df=length(bX1)-2)*se_thetaUE.random 
+ub_thetaUE = thetaUE + qt(0.975,df=length(bX1)-2)*se_thetaUE.random 
+p_thetaUE = 2*(1-pt(abs(thetaUE/se_thetaUE.random),df=length(bX1)-2)) 
+
+#Test for directional pleiotropy 
+interUE = summary(lm(bY~bX1, weights=bYse^-2))$coef[1] 
+se_interUE.random = summary(lm(bY~bX1, weights=bYse^-2))$coef[1,2]/ min(summary(lm(bY~bX1, weights=bYse^-2))$sigma,1) 
+p_interUE = 2*(1-pt(abs(interUE/se_interUE.random),df=length(bX1)-2))
+```
+
+Scatter plot
+
+```{r}
+#IVW MR
+# Weighted linear regression IVW MR
+ivw_model <- lm(beta_outcome_harmonised ~ beta_exposure - 1,
+                data = merged,
+                weights = 1 / se_outcome^2)
+
+# IVW causal estimate
+thetaIVW <- summary(ivw_model)$coef[1]
+
+```
+
+```{r}
+ggplot(merged, aes(x = beta_exposure, y = beta_outcome_harmonised)) +
+  geom_point(size = 2, color = "blue") +  
+ # geom_abline(slope = thetaUE, color = "pink", linetype = "dashed", size = 1) +
+  geom_smooth(method = "lm", formula = y ~ x, se = TRUE, # MR eggar univariate
+              aes(weight = bYse^-2),
+              color = "red", linetype = "dashed", linewidth = 1) +
+  #geom_abline(slope = thetaIVW, intercept = 0, color = "green", linetype = "dashed", size = 1) +  # IVW MR line 
+  geom_smooth(method = "lm", formula = y ~ x - 1, se = TRUE, aes(weight = bYse^-2),
+              color = "yellow", linetype = "dashed", linewidth = 1)
+  theme_minimal() +
+  labs(
+    title = "Mendelian Randomization Scatter Plot",
+    x = "SNP effect on exposure (bX1)",
+    y = "SNP effect on outcome (bY)"
+  )
+```
+
+#### Multivariate MR Eggar.
+
+Notes:
+
+-   The univariable MR-Egger method is the same as the IVW method using weighted linear regression except the intercept term is estimated rather than being set to zero.
+
+-   Testing whether the intercept term is equal to zero is equivalent to testing for directional pleiotropy and the validity of the InSIDE assumption.
+
+-   The genetic associations with the risk factor bX1 and outcome bY must be orientated with respect to the risk increasing or decreasing allele of the risk factor.
+
+Equations for Univariate MR Eggar.
+
+Under the MR-Egger model, multiplicative random-effects should be used as the presence of pleiotropy will lead to overdispersion.
+
+Since the residual standard error is estimated, we use the t-distribution with J − 2 degrees of freedom for inference.

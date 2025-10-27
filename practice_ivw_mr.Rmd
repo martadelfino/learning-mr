@@ -177,6 +177,11 @@ merged <- harmonised %>%
   dplyr::mutate(weight = 1 / (se_outcome^2))
 ```
 
+```{r}
+#Saving the merged and harmonised file with weight column
+write_tsv(merged, "data/menarche_t2d_merged.tsv")
+```
+
 IVW point estimate
 
 ```{r}
