@@ -1,16 +1,44 @@
-# Practice IVW MR - 21OCT25
+# Practice MR Eggar - 24OCT25
 
-Inverse variance weighted MR.
+Univariate MR Eggar.
+
+Notes:
+
+-   The univariable MR-Egger method is the same as the IVW method using weighted linear regression except the intercept term is estimated rather than being set to zero.
+
+-   Testing whether the intercept term is equal to zero is equivalent to testing for directional pleiotropy and the validity of the InSIDE assumption.
+
+-   The genetic associations with the risk factor bX1 and outcome bY must be orientated with respect to the risk increasing or decreasing allele of the risk factor.
+
+Experiment:
 
 -   Exposure: Menarche timing - from a supplementary file.
 
 -   Outcome: T2D GWAS - from Felix.
 
-Equations for IVW
+Equations for Univariate MR Eggar.
 
-thetaUI = sum(bY\*bX1\*bYse\^-2/sum(bX1\^2\*bYse\^-2)
+Under the MR-Egger model, multiplicative random-effects should be used as the presence of pleiotropy will lead to overdispersion.
 
-se_thetaUI = 1/sqrt(sum(bX1\^2bYse\^-2))
+Since the residual standard error is estimated, we use the t-distribution with J − 2 degrees of freedom for inference.
+
+#Orientation of the genetic associations
+
+bY\<-ifelse(bX1\>0, bY, bY*-1)*
+
+*bX1\<-abs(bX1)*
+
+*#Causal estimate*
+
+*thetaUE = summary(lm(bY\~bX1, weights=bYse\^-2))*\$coef[2]
+
+se_thetaUE.random = summary(lm(bY\~bX1, weights=bYse\^-2))\$coef[2,2]/ min(summary(lm(bY\~bX1, weights=bYse\^-2))\$sigma,1)
+
+lb_thetaUE = thetaUE - qt(0.975,df=length(bX1)-2)\*se_thetaUE.random ub_thetaUE = thetaUE + qt(0.975,df=length(bX1)-2)\*se_thetaUE.random p_thetaUE = 2\*(1-pt(abs(thetaUE/se_thetaUE.random),df=length(bX1)-2)) #Test for directional pleiotropy interUE = summary(lm(bY\~bX1, weights=bYse\^-2))\$coef[1] se_interUE.random = summary(lm(bY\~bX1, weights=bYse\^-2))$coef[1,2]/ min(summary(lm(bY~bX1, weights=bYse^-2))$sigma,1) p_interUE = 2(1-pt(abs(interUE/se_interUE.random),df=length(bX1)-2))
+
+-   thetaUI = sum(bY\*bX1\*bYse\^-2/sum(bX1\^2\*bYse\^-2)
+
+-   se_thetaUI = 1/sqrt(sum(bX1\^2bYse\^-2))
 
 Definitions of the variables
 
