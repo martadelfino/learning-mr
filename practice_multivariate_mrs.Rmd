@@ -12,7 +12,9 @@ Experiment:
 
 Notes:
 
--   abd
+-   The multivariable IVW method expands the IVW method using weighted linear regression by estimating the causal effects of the additional risk factors on the outcome.
+-   In the equation below, I include an additional risk factor (and assume the causal estimate of interest is the effect of risk factor 1 on the outcome).
+-   Either fixed- or multiplicative random-effects can be used to estimate the standard error of the causal effect.
 
 Equations for Multivariate IVW MR.
 
@@ -30,7 +32,17 @@ se_theta1MI.random = summary(lm(bY~bX1+bX2+bX3-1, weights=bYse^-2))$coef[1,2]/
 
 Notes:
 
--   abd
+-   The multivariable MR-Egger method is equivalent to the multivariable IVW method using weighted linear regression except the intercept is estimated rather than being set to zero.
+
+-   Testing whether the intercept term is equal to zero is equivalent to testing for directional pleiotropy and the validity of the InSIDE assumption.
+
+-   As with univariable MR-Egger, the standard errors should be calculated from the multiplicative random-effects model.
+
+-   The genetic associations should be orientated with respect to the risk increasing or decreasing allele of the risk factor of interest.
+
+-   In this sample code we will assume the causal effect of risk factor 1 is of primary interest.
+
+-   Since the residual standard error is estimated for the multivariable MR-Egger model we use the t-distribution with J - (K + 1) degrees of freedom for inference.
 
 Equations for Multivariate MR Eggar.
 
@@ -67,88 +79,273 @@ Definitions of the variables
 
 -   bX1: The associations of the genetic variants with the risk factors are denoted bXk with standard error bXk se, where k = 1, ..., K.
 
-**Reading merged and harmonized file**
+Cleaning
+
+-   The Exposure file needs cleaning. Selecting columns and creating new SNP IDs with chr number and position. Selecting only rows with positive betas - just make a new column for this. Flipping the ones with negative betas - make a new column for these as well. Creating new allele frequencies as well (1 - allele frequency) for the flipped alleles.
 
 ```{r}
 library(tidyverse, quietly = TRUE)
+```
 
-merged <- read.delim("data/menarche_t2d_merged.tsv", sep = "\t",
+**Reading second exposure file - BMI**
+
+```{r}
+exposure_bmi <- read.table(gzfile("data/bmi.giant-ukbb.meta-analysis.combined.23May2018.txt.gz"), 
+                           header = TRUE)
+```
+
+Cleaning
+
+```{r}
+exposure_bmi <- exposure_bmi %>%
+  rename(rsid = SNP) %>%
+  rename(Beta = BETA) %>%
+  dplyr::mutate(SNP = paste(CHR, POS, sep = ":")) %>%
+  dplyr::mutate(
+    Beta = as.numeric(Beta),       
+    Beta_positive = if_else(Beta > 0, Beta, NA_real_)
+  ) %>%
+  dplyr::mutate(Beta_negative = if_else(Beta < 0, Beta, NA_real_)) %>%
+  dplyr::mutate(Freq_Tested_Allele = as.numeric(Freq_Tested_Allele))
+```
+
+```{r}
+neg_idx <- exposure_bmi$Beta < 0
+exposure_bmi$Beta[neg_idx] <- -exposure_bmi$Beta[neg_idx]
+
+# Swap columns b and c for those rows
+temp <- exposure_bmi$Tested_Allele[neg_idx]
+exposure_bmi$Tested_Allele[neg_idx] <- exposure_bmi$Other_Allele[neg_idx]
+exposure_bmi$Other_Allele[neg_idx] <- temp
+exposure_bmi$Freq_Tested_Allele[neg_idx] <- 1 - exposure_bmi$Freq_Tested_Allele[neg_idx] 
+```
+
+Reading the other Exposure (menarche timing) and Outcome (T2D) files
+
+```{r}
+exposure_menarche <- read.delim("data/exposure_menarche_timing.tsv", 
+                      sep = "\t",
+                      stringsAsFactors = FALSE)
+outcome_t2d <- read.delim("data/Mahajan.NatGenet2018b.T2D.European.txt", 
+                      sep = "\t",
                       stringsAsFactors = FALSE)
 ```
 
-Univariate MR
+Preparing dfs for MR
+
+```{r}
+# Outcome
+outcome_t2d_mr <- outcome_t2d %>%
+  dplyr::select(SNP, EA, NEA, Beta, SE) %>%
+  dplyr::rename(
+    beta_outcome = Beta,
+    se_outcome = SE,
+    ea_outcome = EA,
+    nea_outcome = NEA
+  )
+
+# Exposure menarche
+exposure_menarche_mr <- exposure_menarche %>%
+  dplyr::select(SNP, ALLELE1, ALLELE0, Beta, SE) %>%
+  dplyr::rename(
+    beta_exposure_menarche = Beta,
+    se_exposure_menarche = SE,
+    ea_exposure_menarche = ALLELE1,
+    nea_exposure_menarche = ALLELE0
+  )
+
+# Exposure BMI
+exposure_bmi_mr <- exposure_bmi %>%
+  dplyr::select(SNP, Tested_Allele, Other_Allele, Beta, SE) %>%
+  dplyr::rename(
+    beta_exposure_bmi = Beta,
+    se_exposure_bmi = SE,
+    ea_exposure_bmi = Tested_Allele,
+    nea_exposure_bmi = Other_Allele
+  )
+```
+
+Merging and harmonizing the exposures
+
+```{r}
+exposures_merged <- inner_join(exposure_menarche_mr, exposure_bmi_mr, by = "SNP")
+```
+
+```{r}
+check_exposures_harmonisation <- function(df) {
+  df <- df %>%
+    rowwise() %>%
+    dplyr::mutate(
+      alignment_status_exposures = case_when(
+        # Alleles match directly
+        ea_exposure_menarche == ea_exposure_bmi &
+          nea_exposure_menarche == nea_exposure_bmi ~ "aligned",
+        # Alleles are swapped
+        ea_exposure_menarche == nea_exposure_bmi &
+          nea_exposure_menarche == ea_exposure_bmi ~ "reverse",
+        TRUE ~ "mismatch"
+      )
+    ) %>%
+    ungroup()
+
+  # Flip outcome effects where alleles are reversed 
+  df <- df %>%
+    dplyr::mutate(
+      beta_exposure_bmi_harmonised = ifelse(alignment_status_exposures == "reverse", 
+                                       -beta_exposure_bmi, 
+                                       beta_exposure_bmi)
+    )
+
+  return(df)
+}
+
+exposures_harmonised_check <- check_exposures_harmonisation(exposures_merged)
+exposures_harmonised <- exposures_harmonised_check %>% 
+  dplyr::filter(alignment_status_exposures != "mismatch")
+```
+
+Merging and harmonising the outcome with the exposures
+
+```{r}
+merged2 <- inner_join(exposures_harmonised, outcome_t2d_mr, by = "SNP")
+```
+
+```{r}
+check_outcome_harmonisation <- function(df) {
+  df <- df %>%
+    rowwise() %>%
+    dplyr::mutate(
+      alignment_status_outcome = case_when(
+        # Alleles match directly
+        ea_exposure_menarche == ea_outcome &
+          nea_exposure_menarche == nea_outcome ~ "aligned",
+        # Alleles are swapped
+        ea_exposure_menarche == nea_outcome &
+          nea_exposure_menarche == ea_outcome ~ "reverse",
+        TRUE ~ "mismatch"
+      )
+    ) %>%
+    ungroup()
+
+  # Flip outcome effects where alleles are reversed 
+  df <- df %>%
+    dplyr::mutate(
+      beta_outcome_harmonised = ifelse(alignment_status_outcome == "reverse", 
+                                       -beta_outcome, 
+                                       beta_outcome)
+    )
+
+  return(df)
+}
+
+harmonised_check <- check_outcome_harmonisation(merged2)
+harmonised <- harmonised_check %>% dplyr::filter(alignment_status_outcome != "mismatch")
+```
+
+Saving/reading harmonised file
+
+```{r}
+#write_tsv(harmonised, "data/menarche_bmi_t2d_harmonised.tsv")
+```
+
+```{r}
+harmonised <- read.delim("data/menarche_bmi_t2d_harmonised.tsv", sep = "\t",
+                      stringsAsFactors = FALSE)
+```
+
+MR variables
 
 ```{r}
 #Assigning variables
-bY <- merged$beta_outcome_harmonised
-bX1 <- merged$beta_exposure
-bYse <- merged$se_outcome
+bY <- harmonised$beta_outcome_harmonised
+bX1 <- harmonised$beta_exposure_menarche
+bX2 <- harmonised$beta_exposure_bmi_harmonised
+bYse <- harmonised$se_outcome
 
 #Orientation of the genetic associations
 bY<-ifelse(bX1>0, bY, bY-1)
 bX1<-abs(bX1)
 
-
 ```
 
-```{r}
-#Causal estimate
-thetaUE = summary(lm(bY~bX1, weights=bYse^-2))$coef[2]
-se_thetaUE.random = summary(lm(bY~bX1, weights=bYse^-2))$coef[2,2]/ min(summary(lm(bY~bX1, weights=bYse^-2))$sigma,1)
-lb_thetaUE = thetaUE - qt(0.975,df=length(bX1)-2)*se_thetaUE.random 
-ub_thetaUE = thetaUE + qt(0.975,df=length(bX1)-2)*se_thetaUE.random 
-p_thetaUE = 2*(1-pt(abs(thetaUE/se_thetaUE.random),df=length(bX1)-2)) 
+Multivariate IVW MR
 
-#Test for directional pleiotropy 
-interUE = summary(lm(bY~bX1, weights=bYse^-2))$coef[1] 
-se_interUE.random = summary(lm(bY~bX1, weights=bYse^-2))$coef[1,2]/ min(summary(lm(bY~bX1, weights=bYse^-2))$sigma,1) 
-p_interUE = 2*(1-pt(abs(interUE/se_interUE.random),df=length(bX1)-2))
+```{r}
+theta1MI = summary(lm(bY~bX1+bX2-1, weights=bYse^-2))#$coef[1]
+print(theta1MI)
+
+# se_theta1MI.fixed = summary(lm(bY~bX1+bX2-1, weights=bYse^-2))$coef[1,2]/
+#   summary(lm(bY~bX1+bX2-1, weights=bYse^-2))$sigma
+# 
+# se_theta1MI.random = summary(lm(bY~bX1+bX2-1, weights=bYse^-2))$coef[1,2]/
+#   min(summary(lm(bY~bX1+bX2-1, weights=bYse^-2))$sigma,1)
+# 
+# print(theta1MI)
+# print(se_theta1MI.fixed)
+# print(se_theta1MI.random)
+# 
+# ci_lower <- theta1MI - 1.96 * se_theta1MI.random
+# ci_upper <- theta1MI + 1.96 * se_theta1MI.random
+# p_value  <- 2 * (1 - pnorm(abs(theta1MI / se_theta1MI.random)))
+# 
+# cat("Causal estimate (exposure 1):", round(theta1MI, 4), "\n",
+#     "95% CI:", round(ci_lower, 4), "to", round(ci_upper, 4), "\n",
+#     "P-value:", signif(p_value, 3))
 ```
 
-Scatter plot
+Funnel plot
 
 ```{r}
-#IVW MR
-# Weighted linear regression IVW MR
-ivw_model <- lm(beta_outcome_harmonised ~ beta_exposure - 1,
-                data = merged,
-                weights = 1 / se_outcome^2)
 
-# IVW causal estimate
-thetaIVW <- summary(ivw_model)$coef[1]
+dat <- harmonised
+fit <- lm(beta_outcome_harmonised ~ beta_exposure_menarche + beta_exposure_bmi_harmonised - 1, weights = 1 / (se_outcome^2), data = dat)
+summary(fit)
+theta1 <- coef(fit)[["beta_exposure_menarche"]]
+theta2 <- coef(fit)[["beta_exposure_bmi_harmonised"]]
 
-```
+dat$predicted <- predict(fit)
+dat$residuals <- dat$beta_outcome_harmonised - dat$predicted
 
-```{r}
-ggplot(merged, aes(x = beta_exposure, y = beta_outcome_harmonised)) +
-  geom_point(size = 2, color = "blue") +  
- # geom_abline(slope = thetaUE, color = "pink", linetype = "dashed", size = 1) +
-  geom_smooth(method = "lm", formula = y ~ x, se = TRUE, # MR eggar univariate
-              aes(weight = bYse^-2),
-              color = "red", linetype = "dashed", linewidth = 1) +
-  #geom_abline(slope = thetaIVW, intercept = 0, color = "green", linetype = "dashed", size = 1) +  # IVW MR line 
-  geom_smooth(method = "lm", formula = y ~ x - 1, se = TRUE, aes(weight = bYse^-2),
-              color = "yellow", linetype = "dashed", linewidth = 1)
-  theme_minimal() +
+library(ggplot2)
+
+ggplot(dat, aes(x = residuals, y = 1 / se_outcome)) +
+  geom_point(size = 2, alpha = 0.7, color = "steelblue") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "red") +
+  theme_minimal(base_size = 14) +
   labs(
-    title = "Mendelian Randomization Scatter Plot",
-    x = "SNP effect on exposure (bX1)",
-    y = "SNP effect on outcome (bY)"
+    title = "Funnel Plot – Multivariable IVW MR",
+    x = "SNP residual (bY − predicted bY)",
+    y = "Precision (1 / SE of bY)"
   )
+
 ```
 
 #### Multivariate MR Eggar.
 
-Notes:
+```{r}
+#Assigning variables
+bY <- harmonised$beta_outcome_harmonised
+bX1 <- harmonised$beta_exposure_menarche
+bX2 <- harmonised$beta_exposure_bmi_harmonised
+bYse <- harmonised$se_outcome
 
--   The univariable MR-Egger method is the same as the IVW method using weighted linear regression except the intercept term is estimated rather than being set to zero.
 
--   Testing whether the intercept term is equal to zero is equivalent to testing for directional pleiotropy and the validity of the InSIDE assumption.
+#Causal estimate for X1
+multivariate_mr_eggar_regression_model <- summary(lm(bY~bX1+bX2, weights=bYse^-2))
+theta1ME = multivariate_mr_eggar_regression_model$coef[2]
+print(multivariate_mr_eggar_regression_model)
 
--   The genetic associations with the risk factor bX1 and outcome bY must be orientated with respect to the risk increasing or decreasing allele of the risk factor.
+se_theta1ME.random = summary(lm(bY~bX1+bX2, weights=bYse^-2))$coef[2,2]/
+  min(summary(lm(bY~bX1+bX2, weights=bYse^-2))$sigma,1)
 
-Equations for Univariate MR Eggar.
+lb_theta1ME = theta1ME - qt(0.975,df=length(bX1)-4)*se_theta1ME.random
+ub_theta1ME = theta1ME + qt(0.975,df=length(bX1)-4)*se_theta1ME.random
+p_theta1ME = 2*(1-pt(abs(theta1ME/se_theta1ME.random),df=length(bX1)-4))
 
-Under the MR-Egger model, multiplicative random-effects should be used as the presence of pleiotropy will lead to overdispersion.
 
-Since the residual standard error is estimated, we use the t-distribution with J − 2 degrees of freedom for inference.
+#Test for directional pleiotropy
+interME = summary(lm(bY~bX1+bX2, weights=bYse^-2))$coef[1]
+se_interME.random = summary(lm(bY~bX1+bX2, weights=bYse^-2))$coef[1,2]/
+  min(summary(lm(bY~bX1+bX2, weights=bYse^-2))$sigma,1)
+p_interME = 2*(1-pt(abs(interME/se_interME.random),df=length(bX1)-4))
+```
