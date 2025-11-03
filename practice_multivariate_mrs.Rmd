@@ -2,9 +2,9 @@
 
 Experiment:
 
--   Exposure: Menarche timing - from a supplementary file.
+-   Exposure: Menarche timing - from a supplementary file. <https://www.nature.com/articles/s41588-024-01798-4>
 
--   Exposure: BMI - I need to find this myself.
+-   Exposure: BMI - I need to find this myself. <https://zenodo.org/records/1251813>
 
 -   Outcome: T2D GWAS - from Felix.
 

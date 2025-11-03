@@ -2,7 +2,7 @@
 
 Inverse variance weighted MR.
 
--   Exposure: Menarche timing - from a supplementary file.
+-   Exposure: Menarche timing - from a supplementary file. <https://www.nature.com/articles/s41588-024-01798-4>
 
 -   Outcome: T2D GWAS - from Felix.
 
