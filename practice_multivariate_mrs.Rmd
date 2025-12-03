@@ -8,7 +8,7 @@ Experiment:
 
 -   Outcome: T2D GWAS - from Felix.
 
-#### Multivariate IVW MR.
+#### Multivariate IVW MR notes
 
 Notes:
 
@@ -28,7 +28,7 @@ se_theta1MI.random = summary(lm(bY~bX1+bX2+bX3-1, weights=bYse^-2))$coef[1,2]/
   min(summary(lm(bY~bX1+bX2+bX3-1, weights=bYse^-2))$sigma,1)
 ```
 
-#### Multivariate MR Eggar.
+#### Multivariate MR Eggar notes
 
 Notes:
 
@@ -79,6 +79,8 @@ Definitions of the variables
 
 -   bX1: The associations of the genetic variants with the risk factors are denoted bXk with standard error bXk se, where k = 1, ..., K.
 
+### Preparing files for MR
+
 Cleaning
 
 -   The Exposure file needs cleaning. Selecting columns and creating new SNP IDs with chr number and position. Selecting only rows with positive betas - just make a new column for this. Flipping the ones with negative betas - make a new column for these as well. Creating new allele frequencies as well (1 - allele frequency) for the flipped alleles.
@@ -87,7 +89,7 @@ Cleaning
 library(tidyverse, quietly = TRUE)
 ```
 
-**Reading second exposure file - BMI**
+#### **Reading second exposure file - BMI**
 
 ```{r}
 exposure_bmi <- read.table(gzfile("data/bmi.giant-ukbb.meta-analysis.combined.23May2018.txt.gz"), 
@@ -120,7 +122,7 @@ exposure_bmi$Other_Allele[neg_idx] <- temp
 exposure_bmi$Freq_Tested_Allele[neg_idx] <- 1 - exposure_bmi$Freq_Tested_Allele[neg_idx] 
 ```
 
-Reading the other Exposure (menarche timing) and Outcome (T2D) files
+#### Reading the other Exposure (menarche timing) and Outcome (T2D) files
 
 ```{r}
 exposure_menarche <- read.delim("data/exposure_menarche_timing.tsv", 
@@ -242,7 +244,7 @@ harmonised_check <- check_outcome_harmonisation(merged2)
 harmonised <- harmonised_check %>% dplyr::filter(alignment_status_outcome != "mismatch")
 ```
 
-Saving/reading harmonised file
+#### Saving/reading harmonised file
 
 ```{r}
 #write_tsv(harmonised, "data/menarche_bmi_t2d_harmonised.tsv")
@@ -252,6 +254,8 @@ Saving/reading harmonised file
 harmonised <- read.delim("data/menarche_bmi_t2d_harmonised.tsv", sep = "\t",
                       stringsAsFactors = FALSE)
 ```
+
+### MR
 
 MR variables
 
@@ -268,7 +272,7 @@ bX1<-abs(bX1)
 
 ```
 
-Multivariate IVW MR
+#### Multivariate IVW MR
 
 ```{r}
 theta1MI = summary(lm(bY~bX1+bX2-1, weights=bYse^-2))#$coef[1]
@@ -293,59 +297,318 @@ print(theta1MI)
 #     "P-value:", signif(p_value, 3))
 ```
 
-Funnel plot
+What this means
+
+``` r
+# Call:
+# lm(formula = bY ~ bX1 + bX2 - 1, weights = bYse^-2)
+# 
+# Weighted Residuals:
+#     Min      1Q  Median      3Q     Max 
+# -9.3770 -0.9762  0.0132  0.9435  6.6989 
+# 
+# Coefficients:
+#     Estimate Std. Error t value Pr(>|t|)    
+# bX1 -0.03409    0.01900  -1.794   0.0731 .  
+# bX2  1.08968    0.05758  18.926   <2e-16 ***
+# ---
+# Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+# 
+# Residual standard error: 1.699 on 801 degrees of freedom
+# Multiple R-squared:  0.3945,  Adjusted R-squared:  0.3929 
+# F-statistic: 260.9 on 2 and 801 DF,  p-value: < 2.2e-16
+```
+
+Funnel plot - multivariable IVW - without lines
 
 ```{r}
-
 dat <- harmonised
-fit <- lm(beta_outcome_harmonised ~ beta_exposure_menarche + beta_exposure_bmi_harmonised - 1, weights = 1 / (se_outcome^2), data = dat)
-summary(fit)
-theta1 <- coef(fit)[["beta_exposure_menarche"]]
-theta2 <- coef(fit)[["beta_exposure_bmi_harmonised"]]
-
-dat$predicted <- predict(fit)
-dat$residuals <- dat$beta_outcome_harmonised - dat$predicted
+fit <- lm(harmonised$beta_outcome_harmonised ~ harmonised$beta_exposure_menarche + harmonised$beta_exposure_bmi_harmonised - 1, weights = harmonised$se_outcome^-2)
+dat$pred <- predict(fit)
+dat$resid <- resid(fit)
+dat$precision <- 1 / harmonised$se_outcome
 
 library(ggplot2)
 
-ggplot(dat, aes(x = residuals, y = 1 / se_outcome)) +
-  geom_point(size = 2, alpha = 0.7, color = "steelblue") +
-  geom_vline(xintercept = 0, linetype = "dashed", color = "red") +
-  theme_minimal(base_size = 14) +
+ggplot(dat, aes(x = resid, y = precision)) +
+  geom_point() +
+  geom_vline(xintercept = 0, color = "red", linetype = "dashed") +
   labs(
-    title = "Funnel Plot – Multivariable IVW MR",
-    x = "SNP residual (bY − predicted bY)",
+    title = "Funnel plot from multivariable IVW MR regression",
+    x = "Residuals (bY - predicted bY)",
     y = "Precision (1 / SE of bY)"
+  ) +
+  theme_minimal()
+
+```
+
+Funnel plot with CI lines
+
+```{r}
+#' Multivariable MR funnel plot (two exposures)
+#' 
+#' @param bY Numeric vector of SNP–outcome associations
+#' @param bYse Numeric vector of SNP–outcome standard errors
+#' @param bX1 Numeric vector of SNP–exposure1 associations
+#' @param bX2 Numeric vector of SNP–exposure2 associations
+#' @param fit Optional: lm object from lm(bY ~ bX1 + bX2 - 1, weights=bYse^-2)
+#' @param CI Logical; whether to include 95% confidence intervals
+#' 
+#' @return A ggplot2 funnel plot
+#' @examples
+#' funnel_mvmr(bY, bYse, bX1, bX2, fit)
+funnel_mvmr <- function(bY, bYse, bX1, bX2, fit = NULL, CI = TRUE, title = 'Funnel Plot') {
+  library(ggplot2)
+  
+  # If no fit is provided, run the regression
+  if (is.null(fit)) {
+    fit <- lm(bY ~ bX1 + bX2 - 1, weights = bYse^-2)
+  }
+  
+  # Predicted and residual values
+  pred <- predict(fit)
+  resid <- resid(fit)
+  
+  # Compute "per-SNP causal ratio" equivalent (residuals or partial effects)
+  r <- resid   # for multivariable Egger funnel, residuals are more meaningful
+  precision <- abs(1 / bYse)
+  
+  # Compute 95% CI for visual clarity
+  CI_lower <- r - qnorm(0.975) * bYse
+  CI_upper <- r + qnorm(0.975) * bYse
+  
+  dframe <- data.frame(r, precision, CI_lower, CI_upper)
+  
+  X_label <- "Residual (observed - predicted bY)"
+  Y_label <- "Precision (1 / SE)"
+  
+  # Weighted mean line (analogous to IVW estimate)
+  ivw_estimate <- sum(bY * (1 / bYse^2)) / sum(1 / bYse^2)
+  
+  if (CI) {
+    p <- ggplot(dframe, aes(x = r, y = precision)) +
+      geom_point() +
+      geom_linerange(aes(xmin = CI_lower, xmax = CI_upper)) +
+      geom_vline(xintercept = 0, color = "black") +
+      geom_vline(xintercept = ivw_estimate, lty = 2, color = "red") +
+      ylab(Y_label) + xlab(X_label) +
+      theme_classic() +
+      ggtitle(title)
+  } else {
+    p <- ggplot(dframe, aes(x = r, y = precision)) +
+      geom_point() +
+      geom_vline(xintercept = 0, color = "black") +
+      geom_vline(xintercept = ivw_estimate, lty = 2, color = "red") +
+      ylab(Y_label) + xlab(X_label) +
+      theme_classic() +
+      ggtitle(title)
+  }
+  
+  print(p)
+  invisible(p)
+}
+
+```
+
+```{r}
+dat <- harmonised
+fit <- lm(harmonised$beta_outcome_harmonised ~ harmonised$beta_exposure_menarche + harmonised$beta_exposure_bmi_harmonised - 1, weights = harmonised$se_outcome^-2)
+dat$pred <- predict(fit)
+dat$resid <- resid(fit)
+dat$precision <- 1 / harmonised$se_outcome
+
+funnel_mvmr(bY = harmonised$beta_outcome_harmonised, 
+            bYse = harmonised$se_outcome, 
+            bX1 = harmonised$beta_exposure_menarche, 
+            bX2 = harmonised$beta_exposure_bmi_harmonised, 
+            fit = fit, 
+            title = 'Multivariable IVW MR Funnel Plot')
+```
+
+#### Multivariate MR Eggar code
+
+```{r}
+# #Assigning variables
+# bY <- harmonised$beta_outcome_harmonised
+# bX1 <- harmonised$beta_exposure_menarche
+# bX2 <- harmonised$beta_exposure_bmi_harmonised
+# bYse <- harmonised$se_outcome
+# 
+# 
+# #Causal estimate for X1
+# multivariate_mr_eggar_regression_model <- summary(lm(bY~bX1+bX2, weights=bYse^-2))
+# theta1ME = multivariate_mr_eggar_regression_model$coef[2]
+# print(multivariate_mr_eggar_regression_model)
+# 
+# se_theta1ME.random = summary(lm(bY~bX1+bX2, weights=bYse^-2))$coef[2,2]/
+#   min(summary(lm(bY~bX1+bX2, weights=bYse^-2))$sigma,1)
+# 
+# lb_theta1ME = theta1ME - qt(0.975,df=length(bX1)-4)*se_theta1ME.random
+# ub_theta1ME = theta1ME + qt(0.975,df=length(bX1)-4)*se_theta1ME.random
+# p_theta1ME = 2*(1-pt(abs(theta1ME/se_theta1ME.random),df=length(bX1)-4))
+# 
+# 
+# #Test for directional pleiotropy
+# interME = summary(lm(bY~bX1+bX2, weights=bYse^-2))$coef[1]
+# se_interME.random = summary(lm(bY~bX1+bX2, weights=bYse^-2))$coef[1,2]/
+#   min(summary(lm(bY~bX1+bX2, weights=bYse^-2))$sigma,1)
+# p_interME = 2*(1-pt(abs(interME/se_interME.random),df=length(bX1)-4))
+```
+
+```{r}
+theta1MI = summary(lm(bY~bX1+bX2, weights=bYse^-2))#$coef[1]
+print(theta1MI)
+```
+
+Explanation of results
+
+``` r
+# Call:
+# lm(formula = bY ~ bX1 + bX2, weights = bYse^-2)
+# 
+# Weighted Residuals:
+#     Min      1Q  Median      3Q     Max 
+# -9.3280 -0.9439  0.0320  0.9794  6.7612 
+# 
+# Coefficients:
+#              Estimate Std. Error t value Pr(>|t|)    
+# (Intercept) -0.001689   0.001068  -1.582    0.114    
+# bX1          0.020497   0.039388   0.520    0.603    
+# bX2          1.084991   0.057599  18.837   <2e-16 ***
+# ---
+# Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+# 
+# Residual standard error: 1.698 on 800 degrees of freedom
+# Multiple R-squared:  0.3132,  Adjusted R-squared:  0.3115 
+# F-statistic: 182.4 on 2 and 800 DF,  p-value: < 2.2e-16
+```
+
+```{r}
+# Funnel plot 
+# ------------------------------------------------------------
+
+library(ggplot2)
+
+
+# SNP-specific MR causal estimate (Wald ratio)
+dat$bIV <- dat$beta_outcome_harmonised / dat$beta_exposure_menarche
+dat$SE_IV <- sqrt((dat$se_outcome / dat$beta_exposure_menarche)^2)
+dat$precision <- 1 / dat$SE_IV
+
+# Compute overall MR estimates (replace with your actual values)
+egger_intercept <- -0.001689  # MR-Egger intercept - first row in the above results
+ivw_estimate <- sum(dat$bIV / dat$SE_IV^2) / sum(1 / dat$SE_IV^2)  # IVW estimate
+
+# Funnel boundaries (straight oblique lines)
+max_prec <- max(dat$precision)
+prec_seq <- seq(0, max_prec, length.out = 100)
+funnel_df <- data.frame(
+  precision = prec_seq,
+  left  = ivw_estimate - 1.96 / prec_seq,
+  right = ivw_estimate + 1.96 / prec_seq
+)
+
+# Funnel plot
+ggplot(dat, aes(x = bIV, y = precision)) +
+  geom_point(size = 0.7, alpha = 0.1, color = "black") +
+  geom_vline(xintercept = egger_intercept, color = "pink", size = 0.8) +
+  geom_vline(xintercept = ivw_estimate, color = "green", linetype = "dashed", size = 0.8) +
+  geom_line(data = funnel_df, aes(x = left, y = precision), color = "steelblue", linetype = "dotted") +
+  geom_line(data = funnel_df, aes(x = right, y = precision), color = "steelblue", linetype = "dotted") +
+  labs(
+    title = "Funnel plot for MR analysis",
+    x = expression("Instrumental variable effect (" * beta[IV] * ")"),
+    y = expression("Precision (1 / SE"[IV] * ")")) + #,
+    #caption = "The vertical solid gray line represents the MR-Egger intercept;\n
+     #          the vertical dashed gray line represents the inverse variance weighted estimate") +
+  theme_classic(base_size = 13) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.caption = element_text(size = 10, hjust = 0.5)
   )
 
 ```
 
-#### Multivariate MR Eggar.
+### The two types of funnel plots - univariate MR
 
 ```{r}
-#Assigning variables
-bY <- harmonised$beta_outcome_harmonised
-bX1 <- harmonised$beta_exposure_menarche
-bX2 <- harmonised$beta_exposure_bmi_harmonised
-bYse <- harmonised$se_outcome
+dat <- harmonised
 
+univ_ivw <- lm(
+  harmonised$beta_outcome_harmonised ~ harmonised$beta_exposure_menarche, # - 1, #+ harmonised$beta_exposure_bmi_harmonised
+  weights = harmonised$se_outcome^-2
+)
+print(univ_ivw)
 
-#Causal estimate for X1
-multivariate_mr_eggar_regression_model <- summary(lm(bY~bX1+bX2, weights=bYse^-2))
-theta1ME = multivariate_mr_eggar_regression_model$coef[2]
-print(multivariate_mr_eggar_regression_model)
+dat$pred <- predict(univ_ivw)
+dat$resid <- resid(univ_ivw)
+dat$precision <- 1 / harmonised$se_outcome
+dat$variance <- harmonised$se_outcome^2
+dat$inv_variance <- 1 / dat$variance
+dat$effect <- harmonised$beta_outcome_harmonised
+dat$se <- harmonised$se_outcome
+dat$se_over_betaexposure <- harmonised$se_outcome / harmonised$beta_exposure_menarche
 
-se_theta1ME.random = summary(lm(bY~bX1+bX2, weights=bYse^-2))$coef[2,2]/
-  min(summary(lm(bY~bX1+bX2, weights=bYse^-2))$sigma,1)
+# IVW 
+beta_of_ivw <- univ_ivw$coefficients[2]
+print(ivw)
+se_of_beta_of_ivw <- summary(univ_ivw)$coefficients[2, 2]
+print(se_of_beta_of_ivw)
 
-lb_theta1ME = theta1ME - qt(0.975,df=length(bX1)-4)*se_theta1ME.random
-ub_theta1ME = theta1ME + qt(0.975,df=length(bX1)-4)*se_theta1ME.random
-p_theta1ME = 2*(1-pt(abs(theta1ME/se_theta1ME.random),df=length(bX1)-4))
+library(ggplot2)
+library(patchwork)
 
+# --- Helper function for funnel bounds ---
+funnel_bounds <- function(se, bhat) {
+  data.frame(
+    se = se,
+    upper = bhat + 1.96 * se,
+    lower = bhat - 1.96 * se
+  )
+}
 
-#Test for directional pleiotropy
-interME = summary(lm(bY~bX1+bX2, weights=bYse^-2))$coef[1]
-se_interME.random = summary(lm(bY~bX1+bX2, weights=bYse^-2))$coef[1,2]/
-  min(summary(lm(bY~bX1+bX2, weights=bYse^-2))$sigma,1)
-p_interME = 2*(1-pt(abs(interME/se_interME.random),df=length(bX1)-4))
+# --- Funnel plot: Standard Error of Outcome /  Beta of Exposure ---
+funnel_A <- funnel_bounds(se_of_beta_of_ivw, beta_of_ivw)
+print(funnel_A)
+
+pA <- ggplot(dat, aes(x = effect, y = se_over_betaexposure)) +
+  geom_point(color = "steelblue", alpha = 0.7) +
+  geom_line(data = funnel_A, 
+            aes(x = upper, y = se), 
+            linetype = "dashed") +
+  geom_line(data = funnel_A, 
+            aes(x = lower, y = se), 
+            linetype = "dashed") +
+  geom_vline(xintercept = intercept, color = "red") +
+  scale_y_reverse() +
+  labs(
+    title = "Funnel plot: Standard Error of Outcome / Beta of Exposure",
+    x = "SNP beta outcome / SNP beta exposure", 
+    y = "Standard error of outcome / beta exposure"
+  ) +
+  theme_minimal()
+
+# --- Funnel plot: Precision = 1/SE ---
+prec_range <- seq(1 / max(dat$se), 1 / min(dat$se), length.out = 200)
+se_from_prec <- 1 / prec_range
+funnel_B <- data.frame(
+  precision = prec_range,
+  upper = intercept + 1.96 * se_from_prec,
+  lower = intercept - 1.96 * se_from_prec
+)
+
+pB <- ggplot(dat, aes(x = effect, y = precision)) +
+  geom_point(color = "steelblue", alpha = 0.7) +
+  geom_line(data = funnel_B, aes(x = upper, y = precision), linetype = "dashed") +
+  geom_line(data = funnel_B, aes(x = lower, y = precision), linetype = "dashed") +
+  geom_vline(xintercept = intercept, color = "red") +
+  labs(
+    title = "Funnel plot: Precision = 1/SE",
+    x = "SNP beta outcome / SNP beta exposure", y = "Precision (1/SE)"
+  ) +
+  theme_minimal()
+
+# --- Combine plots ---
+(pA | pB) 
+
 ```
